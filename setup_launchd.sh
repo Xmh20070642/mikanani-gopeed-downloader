@@ -13,7 +13,7 @@ PYTHON="$(command -v python3 || echo /usr/bin/python3)"
 
 if [ ! -f "$SCRIPT_DIR/config.json" ]; then
     echo "错误：找不到 $SCRIPT_DIR/config.json"
-    echo "请先：cp config.example.json config.json 并填好你的 RSS 订阅与番剧目录。"
+    echo "请编辑 config.json，填入你的 RSS 订阅链接与番剧目录。"
     exit 1
 fi
 

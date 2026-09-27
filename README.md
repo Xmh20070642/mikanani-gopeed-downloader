@@ -24,8 +24,7 @@ macOS 本地的 Mikan 追番自动下载服务：监听你的 Mikan 订阅 RSS�
 ```bash
 git clone https://github.com/Xmh20070642/mikanani-gopeed-downloader.git && cd mikan-gopeed
 
-# 1. 从示例创建配置，填入你的 RSS 订阅链接和番剧根目录
-cp config.example.json config.json
+# 1. 编辑 config.json，填入你的 RSS 订阅链接和番剧根目录
 vim config.json
 
 # 2. 先空跑一轮看看会做什么（不会真的下载）
@@ -54,7 +53,7 @@ python3 mikan_gopeed.py --once --verbose
 
 ## 配置说明
 
-所有路径都支持 `~` 展开。完整键位见 `config.example.json`：
+所有路径都支持 `~` 展开。完整键位见 `config.json`（仓库自带的就是占位模板）：
 
 | 键 | 说明 |
 |---|---|
