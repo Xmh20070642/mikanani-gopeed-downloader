@@ -1,0 +1,17 @@
+# 密钥与运行态，不入库
+config.json
+state.json
+record-pending.json
+record-backup.md
+番剧更新记录.md
+gopeed-config-backup.json
+rehearsal-*
+
+# Python / 系统
+__pycache__/
+*.pyc
+.DS_Store
+*.log
+*.tmp
+state.lock
+rss-url-backup.txt

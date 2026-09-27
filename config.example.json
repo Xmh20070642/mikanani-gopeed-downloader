@@ -1,0 +1,25 @@
+{
+  "rss_url": "https://mikanani.me/RSS/MyBangumi?token=<你的Mikan订阅token>",
+  "anime_root": "~/Movies/番剧",
+  "completed_dir_name": "已完結",
+  "state_path": "~/Library/Application Support/mikan-gopeed/state.json",
+  "record_path": "~/Desktop/番剧更新记录.md",
+  "record_backup_path": "~/Library/Application Support/mikan-gopeed/record-backup.md",
+  "pending_path": "~/Library/Application Support/mikan-gopeed/record-pending.json",
+  "max_task_attempts": 3,
+  "poll_interval_seconds": 600,
+  "match_threshold": 0.62,
+  "match_margin": 0.08,
+  "gopeed_api": {
+    "base_url": "http://127.0.0.1:9999",
+    "token": "",
+    "unix_socket": "~/Library/Application Support/com.gopeed.gopeed/gopeed_host.sock",
+    "start_app": true,
+    "app_name": "Gopeed"
+  },
+  "aliases": {
+    "示例：目录名与 RSS 标题写法差异较大时在这里补别名": [
+      "RSS 里会用到的另一个写法"
+    ]
+  }
+}
