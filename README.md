@@ -110,6 +110,14 @@ rm ~/Library/LaunchAgents/com.mikan-gopeed.plist
 - 桌面记录文件可以用 TextEdit 等常见编辑器直接编辑，服务会在你的修改基础上插入新记录（已实测）。若某天日志出现 `record write failed`，删掉桌面文件即可，服务会从备份自动重建，历史不会丢
 - 单元测试：`python3 test_mikan_gopeed.py`
 
+## 问题反馈与交流
+
+遇到报错或行为异常：[提交 Issue](https://github.com/Xmh20070642/mikanani-gopeed-downloader/issues/new?template=bug_report.md)，按模板附上诊断信息（⚠️ 贴日志前抹掉 `token=` 后面的内容）。
+
+安装配置疑问、用法讨论：[Discussions 交流区](https://github.com/Xmh20070642/mikanani-gopeed-downloader/discussions)。
+
+> 不需要也不建议私下留邮箱联系——Issues 和 Discussions 会把回复通知到你自己的 GitHub 邮箱，同时讨论过程能帮到后来的人。
+
 ## License
 
 [MIT](LICENSE)
