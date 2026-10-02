@@ -21,7 +21,8 @@ from typing import Any, Iterable
 
 
 VIDEO_EXTENSIONS = {".mp4", ".mkv", ".avi", ".mov", ".ts", ".m2ts", ".webm"}
-USER_AGENT = "mikan-gopeed/1.0"
+__version__ = "1.1.0"
+USER_AGENT = f"mikan-gopeed/{__version__}"
 
 TRADITIONAL_MAP = str.maketrans(
     {
@@ -435,7 +436,6 @@ def make_pending_entry(
         "target": str(target),
         "created_ts": time.time(),
         "expected_files": [str(f.get("name", "")) for f in files][:5],
-        "attempts": 0,
         "keys": item_keys(item),
     }
 
@@ -529,17 +529,27 @@ def check_pending_downloads(
             del pending[task_id]
             log(f"RECORDED download of {entry['title']!r} into {record_path.name}", verbose=verbose)
         elif status == "error":
-            entry["attempts"] = entry.get("attempts", 0) + 1
-            if entry["attempts"] >= max_attempts:
+            # 失败任务必须从 Gopeed 删除，否则它的 btih 会一直占据哈希去重名单，
+            # 下一轮的重新创建会被挡住，"重试"永远不会真正发生
+            try:
+                client.call("DELETE", f"/api/v1/tasks/{task_id}?force=true", timeout=30)
+            except Exception as exc:
+                log(f"ERROR deleting failed task {task_id}: {exc}", verbose=True)
+            attempts = state.setdefault("download_attempts", {})
+            series_key = (entry.get("keys") or ["", "", task_id])[-1]
+            n = attempts.get(series_key, 0) + 1
+            if n >= max_attempts:
                 for key in filter(None, entry.get("keys", [])):
                     state["seen"][key] = "failed"
+                attempts.pop(series_key, None)
                 notify(f"番剧多次下载失败，已放弃本轮更新：{entry['title']}")
-                del pending[task_id]
             else:
+                attempts[series_key] = n
                 for key in filter(None, entry.get("keys", [])):
                     state["seen"].pop(key, None)
-                notify(f"番剧下载失败，下轮自动重试：{entry['title']}")
-            log(f"TASK ERROR {entry['title']!r} attempts={entry['attempts']}", verbose=True)
+                notify(f"番剧下载失败（第 {n}/{max_attempts} 次），下轮自动重试：{entry['title']}")
+            log(f"TASK ERROR {entry['title']!r} attempts={n}", verbose=True)
+            del pending[task_id]
         elif task_id not in index:
             # 任务在 Gopeed 里消失了：若文件已落地则照常记录，否则视为用户主动删除
             disk = new_video_files_since(target, entry["created_ts"])
@@ -769,6 +779,42 @@ def acquire_run_lock(state_path: Path) -> bool:
     return True
 
 
+def wait_for_records(
+    client: "GopeedClient",
+    pending_path: Path,
+    record_path: Path,
+    state: dict[str, Any],
+    backup_path: Path,
+    *,
+    max_wait: int = 900,
+    poll_interval: int = 15,
+    max_attempts: int = 3,
+    verbose: bool = False,
+) -> bool:
+    """任务创建后在同一进程内盯梢：每 poll_interval 秒检查一次，
+    全部下载完成并写入记录后返回 True；超时交给下一轮巡检兜底。"""
+    deadline = time.time() + max(max_wait, 0)
+    while True:
+        try:
+            check_pending_downloads(
+                client,
+                pending_path,
+                record_path,
+                state,
+                max_attempts=max_attempts,
+                verbose=verbose,
+                backup_path=backup_path,
+            )
+        except Exception as exc:
+            log(f"ERROR pending check failed (will retry): {exc}", verbose=True)
+        if not load_pending(pending_path):
+            return True
+        if time.time() >= deadline:
+            log(f"record wait timeout after {max_wait}s; falling back to next cycle", verbose=verbose)
+            return False
+        time.sleep(poll_interval)
+
+
 def run_once(config: dict[str, Any], *, dry_run: bool, verbose: bool) -> int:
     rss_url = config["rss_url"]
     root = Path(os.path.expanduser(config["anime_root"]))
@@ -880,6 +926,7 @@ def run_once(config: dict[str, Any], *, dry_run: bool, verbose: bool) -> int:
             if not dry_run:
                 mark_seen(state, item, "existing-file")
                 state.setdefault("series_folders", {})[normalize_text(series_title(title))] = target_name
+                state.get("download_attempts", {}).pop(item_keys(item)[-1], None)
             continue
         if is_seen(state, item):
             summary["skipped"] += 1
@@ -944,6 +991,7 @@ def run_once(config: dict[str, Any], *, dry_run: bool, verbose: bool) -> int:
     if not dry_run:
         if api_available:
             try:
+                # 先处理上一轮遗留，再盯梢本轮新任务直到完成（或超时）
                 check_pending_downloads(
                     client,
                     pending_path,
@@ -952,6 +1000,16 @@ def run_once(config: dict[str, Any], *, dry_run: bool, verbose: bool) -> int:
                     max_attempts=max(1, int(config.get("max_task_attempts", 3))),
                     verbose=verbose,
                     backup_path=backup_path,
+                )
+                wait_for_records(
+                    client,
+                    pending_path,
+                    record_path,
+                    state,
+                    backup_path,
+                    max_wait=max(0, int(config.get("record_wait_seconds", 900))),
+                    max_attempts=max(1, int(config.get("max_task_attempts", 3))),
+                    verbose=verbose,
                 )
             except Exception as exc:
                 log(f"ERROR pending check failed (will retry next cycle): {exc}", verbose=True)

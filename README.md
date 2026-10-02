@@ -10,7 +10,7 @@ macOS 本地的 Mikan 追番自动下载服务：监听你的 Mikan 订阅 RSS�
 - **磁力提取三级回退**：条目页面抓 `magnet:` → 下载 `.torrent` 计算 infohash 拼磁力 → 最后才把 torrent 直链交给 Gopeed
 - **番剧目录匹配**：繁简转换、别名表、相似度匹配（阈值可调），对不上时自动建新目录；两个候选无法区分时宁可不下并弹通知
 - **四重去重**：本地状态文件、infohash、RSS GUID、番剧目录内同集文件，绝不重复下载
-- **下载状态跟踪**：任务完成后自动把记录写进桌面文档；失败自动重试（默认 3 次）并弹 macOS 通知
+- **下载状态跟踪**：任务创建后服务会持续盯梢，下载完成后约 15~30 秒内自动把记录写进桌面文档；超大文件超出等待上限（`record_wait_seconds`，默认 15 分钟）时由下一轮巡检兜底，记录不丢。失败自动重试（默认 3 次）并弹 macOS 通知
 - **双保险**：记录文档在服务目录有一份实时备份，桌面文件出意外可自动重建
 
 ## 环境要求
@@ -65,6 +65,7 @@ python3 mikan_gopeed.py --once --verbose
 | `record_backup_path` | 记录的备份位置 |
 | `pending_path` | 下载中任务的跟踪文件 |
 | `max_task_attempts` | 单集下载失败的最大尝试次数 |
+| `record_wait_seconds` | 任务创建后盯梢下载完成的最长等待时间（默认 900 秒） |
 | `poll_interval_seconds` | 常驻模式的轮询间隔（launchd 模式下不生效，间隔由 plist 定） |
 | `match_threshold` / `match_margin` | 标题匹配的相似度阈值 / 决胜差距 |
 | `gopeed_api.unix_socket` | Gopeed 桌面版本地 socket 路径 |
@@ -91,6 +92,11 @@ RSS 链接等同于 Mikan 账号凭证。若需要更换：在 Mikan「我的 Ba
 launchctl bootout gui/$(id -u)/com.mikan-gopeed
 rm ~/Library/LaunchAgents/com.mikan-gopeed.plist
 ```
+
+## 版本历史
+
+- **v1.1.0**（当前）：任务创建后服务持续盯梢，下载完成约 15~30 秒内即写入记录（原先依赖 10 分钟巡检，平均延迟 5 分钟）；修复失败重试机制——失败任务现在会自动从 Gopeed 清理后重新创建，最多尝试 `max_task_attempts` 次；仓库直接附带可编辑的 `config.json` 占位模板；新增 `record_wait_seconds` 配置键
+- **v1.0.0**：首个公开发布版本
 
 ## 实现里踩过的坑（对后来者有用）
 

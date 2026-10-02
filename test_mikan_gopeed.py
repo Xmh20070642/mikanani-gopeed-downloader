@@ -119,8 +119,12 @@ class MikanGopeedTests(unittest.TestCase):
 class _FakeClient:
     def __init__(self, tasks):
         self._tasks = tasks
+        self.deleted = []
 
     def call(self, method, path, payload=None, *, timeout=30):
+        if method == "DELETE":
+            self.deleted.append(path)
+            return None
         return self._tasks
 
 
@@ -148,7 +152,7 @@ class CheckPendingTests(unittest.TestCase):
             self.assertIn("第 1 集", record.read_text(encoding="utf-8"))
             self.assertIn("第 1 集", backup.read_text(encoding="utf-8"))
 
-    def test_error_task_pops_state_for_retry(self):
+    def test_error_task_deleted_and_state_popped_for_retry(self):
         with tempfile.TemporaryDirectory() as d:
             root = Path(d)
             pending, record = root / "p.json", root / "r.md"
@@ -156,13 +160,17 @@ class CheckPendingTests(unittest.TestCase):
             target.mkdir()
             entry = self._entry(target)
             service.save_pending(pending, {"t1": entry})
-            state = {"seen": {"g1": "created"}}
+            state = {"seen": {"g1": "created", "X|1": "created"}}
+            client = _FakeClient([{"id": "t1", "status": "error"}])
             service.check_pending_downloads(
-                _FakeClient([{"id": "t1", "status": "error"}]),
-                pending, record, state, max_attempts=3,
+                client, pending, record, state, max_attempts=3,
             )
+            # 失败任务必须被删除，否则 btih 占据去重名单、重试永远不发生
+            self.assertEqual(client.deleted, ["/api/v1/tasks/t1?force=true"])
             self.assertNotIn("g1", state["seen"])  # 重试：状态已摘除
-            self.assertEqual(service.load_pending(pending)["t1"]["attempts"], 1)
+            self.assertNotIn("X|1", state["seen"])
+            self.assertEqual(state["download_attempts"]["X|1"], 1)
+            self.assertEqual(service.load_pending(pending), {})
 
     def test_error_task_gives_up_after_max_attempts(self):
         with tempfile.TemporaryDirectory() as d:
@@ -171,15 +179,59 @@ class CheckPendingTests(unittest.TestCase):
             target = root / "目标番剧"
             target.mkdir()
             entry = self._entry(target)
-            entry["attempts"] = 2
             service.save_pending(pending, {"t1": entry})
-            state = {"seen": {"g1": "created"}}
+            state = {"seen": {"g1": "created", "X|1": "created"},
+                     "download_attempts": {"X|1": 2}}
             service.check_pending_downloads(
                 _FakeClient([{"id": "t1", "status": "error"}]),
                 pending, record, state, max_attempts=3,
             )
             self.assertEqual(state["seen"]["g1"], "failed")  # 放弃并标记
+            self.assertEqual(state["seen"]["X|1"], "failed")
             self.assertEqual(service.load_pending(pending), {})
+
+
+class WaitRecordsTests(unittest.TestCase):
+    def test_wait_returns_true_once_pending_cleared(self):
+        with tempfile.TemporaryDirectory() as d:
+            root = Path(d)
+            pending, record, backup = root / "p.json", root / "r.md", root / "b.md"
+            target = root / "目标番剧"
+            target.mkdir()
+            (target / "x.mp4").write_bytes(b"x")
+            entry = service.make_pending_entry(
+                {"title": "[ANi] X - 01", "guid": "g1"}, target, 1, [{"name": "x.mp4"}]
+            )
+            service.save_pending(pending, {"t1": entry})
+            state = {"seen": {}}
+            client = _FakeClient([{"id": "t1", "status": "done"}])
+            ok = service.wait_for_records(
+                client, pending, record, state, backup,
+                max_wait=5, poll_interval=0, verbose=False,
+            )
+            self.assertTrue(ok)
+            self.assertIn("第 1 集", record.read_text(encoding="utf-8"))
+            self.assertEqual(service.load_pending(pending), {})
+
+    def test_wait_times_out_and_leaves_pending(self):
+        with tempfile.TemporaryDirectory() as d:
+            root = Path(d)
+            pending, record, backup = root / "p.json", root / "r.md", root / "b.md"
+            target = root / "目标番剧"
+            target.mkdir()
+            entry = service.make_pending_entry(
+                {"title": "[ANi] X - 02", "guid": "g2"}, target, 2, []
+            )
+            service.save_pending(pending, {"t2": entry})
+            state = {"seen": {}}
+            # 任务一直处于 running 状态 → 超时返回 False，pending 保留给下轮兜底
+            ok = service.wait_for_records(
+                _FakeClient([{"id": "t2", "status": "running"}]),
+                pending, record, state, backup,
+                max_wait=0, poll_interval=0, verbose=False,
+            )
+            self.assertFalse(ok)
+            self.assertIn("t2", service.load_pending(pending))
 
 
 if __name__ == "__main__":
