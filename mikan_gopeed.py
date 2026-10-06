@@ -21,7 +21,7 @@ from typing import Any, Iterable
 
 
 VIDEO_EXTENSIONS = {".mp4", ".mkv", ".avi", ".mov", ".ts", ".m2ts", ".webm"}
-__version__ = "1.2.0"
+__version__ = "1.2.1"
 USER_AGENT = f"mikan-gopeed/{__version__}"
 
 TRADITIONAL_MAP = str.maketrans(
@@ -638,8 +638,8 @@ class GopeedClient:
             timeout=timeout,
         )
 
-    def info(self) -> Any:
-        return self.call("GET", "/api/v1/info", timeout=10)
+    def info(self, timeout: int = 10) -> Any:
+        return self.call("GET", "/api/v1/info", timeout=timeout)
 
     def resolve(self, url: str, target: Path) -> dict[str, Any]:
         return self.call(
