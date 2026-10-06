@@ -21,7 +21,7 @@ from typing import Any, Iterable
 
 
 VIDEO_EXTENSIONS = {".mp4", ".mkv", ".avi", ".mov", ".ts", ".m2ts", ".webm"}
-__version__ = "1.1.0"
+__version__ = "1.2.0"
 USER_AGENT = f"mikan-gopeed/{__version__}"
 
 TRADITIONAL_MAP = str.maketrans(
@@ -257,14 +257,30 @@ def chinese_density(text: str) -> int:
 
 
 def series_title(title: str) -> str:
-    cleaned = strip_episode(title)
-    parts = [part.strip() for part in cleaned.split("/") if part.strip()]
-    if not parts:
-        return cleaned
-    selected = max(parts, key=lambda part: (chinese_density(part), len(part)))
+    # 1) 移除全部括号组（半角 [] 与全角 【】，后者多为字幕组名）与集数尾缀 → 括号外文本
+    outside = re.sub(r"【[^】]*】", " ", title)
+    outside = re.sub(r"\[[^\]]*\]", " ", outside)
+    outside = strip_episode(outside)
+    # 2) 候选：括号外文本按 / 拆分的片段 + 含 / 的 [] 组内子段
+    #    （兼容【字幕组】[番名A / 番名B / 罗马字] 双括号标题，取中日文密度最高者）
+    candidates = []
+    for part in outside.split("/"):
+        part = part.strip()
+        if chinese_density(part) > 0:
+            candidates.append(part)
+    for group in re.findall(r"\[([^\]]+)\]", title):
+        if "/" not in group:
+            continue
+        for part in group.split("/"):
+            part = part.strip()
+            if chinese_density(part) >= 2:
+                candidates.append(part)
+    if not candidates:
+        return re.sub(r"\s+", " ", outside).strip() or title.strip()
+    selected = max(candidates, key=lambda part: (chinese_density(part), len(part)))
     if chinese_density(selected) > 0:
         selected = re.sub(r"^[A-Za-z0-9 ._-]+", "", selected).strip()
-    return selected or cleaned
+    return selected or title.strip()
 
 
 def season_number(text: str) -> int | None:
@@ -777,6 +793,17 @@ def acquire_run_lock(state_path: Path) -> bool:
         return False
     _run_lock = handle
     return True
+
+
+def release_run_lock() -> None:
+    # 常驻进程（如网页面板）在每轮刷新结束后需要显式释放，否则同进程内后续刷新拿不到锁
+    global _run_lock
+    if _run_lock:
+        try:
+            _run_lock.close()
+        except Exception:
+            pass
+        _run_lock = None
 
 
 def wait_for_records(

@@ -22,5 +22,7 @@
       "RSS 里会用到的另一个写法"
     ]
   },
-  "record_wait_seconds": 900
+  "record_wait_seconds": 900,
+  "webui_port": 8787,
+  "webui_icon": "icon.png"
 }

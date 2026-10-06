@@ -4,6 +4,7 @@ import unittest
 from pathlib import Path
 
 import mikan_gopeed as service
+import webui as service_panel
 
 
 class MikanGopeedTests(unittest.TestCase):
@@ -232,6 +233,61 @@ class WaitRecordsTests(unittest.TestCase):
             )
             self.assertFalse(ok)
             self.assertIn("t2", service.load_pending(pending))
+
+
+class PanelTests(unittest.TestCase):
+    def test_parse_record_md(self):
+        sample = (
+            "# 番剧更新记录\n\n头部说明\n"
+            "\n## 2026-01-02 09:00\n- **B 第 2 集**\n"
+            "  - RSS 标题：[ANi] B - 02\n  - 文件：`b.mp4`\n"
+            "\n## 2026-01-01 08:00\n- **A 第 1 集**\n  - 文件：`a.mp4`\n"
+        )
+        entries = service_panel.parse_record_md(sample)
+        self.assertEqual(len(entries), 2)
+        self.assertEqual(entries[0]["time"], "2026-01-02 09:00")
+        self.assertEqual(entries[0]["title"], "B 第 2 集")
+        self.assertEqual(entries[0]["rss"], "[ANi] B - 02")
+        self.assertEqual(entries[0]["files"], ["b.mp4"])
+        self.assertEqual(entries[1]["files"], ["a.mp4"])
+
+    def test_parse_record_md_tolerates_freeform_edit(self):
+        sample = (
+            "# 番剧更新记录\n"
+            "\n## 2026-01-03 10:00\n- 手动加的一行随便写\n- **C 第 3 集**\n"
+        )
+        entries = service_panel.parse_record_md(sample)
+        self.assertEqual(len(entries), 1)
+        self.assertEqual(entries[0]["title"], "C 第 3 集")
+
+    def test_parse_log_status(self):
+        lines = [
+            "SKIP existing file: x",
+            "ERROR RSS fetch/parse failed (will retry next cycle): 网络原因",
+            'SUMMARY {"items": 2, "skipped": 1, "created": 1, "would_create": 0, "errors": 0}',
+        ]
+        st = service_panel.parse_log_status(lines)
+        self.assertEqual(st["summary"]["items"], 2)
+        self.assertEqual(len(st["errors"]), 1)
+        self.assertIn("RSS", st["errors"][0])
+
+    def test_placeholder_png(self):
+        data = service_panel.generate_placeholder_png(180)
+        self.assertTrue(data.startswith(b"\x89PNG\r\n\x1a\n"))
+        self.assertGreater(len(data), 500)
+
+
+    def test_series_title_fullwidth_group_brackets(self):
+        # 【字幕组】用全角括号、番名在 [] 里且含多语言变体——曾是解析盲区
+        title = ("【今晚月色真美】[青之箱 第二季 / アオのハコ Season 2 / "
+                 "Ao no Hako (2026)][26][WebRip][1080P][AVC-8bit][AAC][简日内嵌]")
+        self.assertEqual(service.series_title(title), "青之箱 第二季")
+        self.assertEqual(service.new_folder_name(title), "青之箱 第二季")
+
+    def test_series_title_multilang_outside_brackets(self):
+        title = ("[ANi] Seihantai na Kimi to Boku S02 /  相反的你和我 第二季 - 25 "
+                 "[1080P][Baha][WEB-DL][AAC AVC][CHT][MP4]")
+        self.assertEqual(service.series_title(title), "相反的你和我 第二季")
 
 
 if __name__ == "__main__":

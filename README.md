@@ -11,6 +11,7 @@ macOS 本地的 Mikan 追番自动下载服务：监听你的 Mikan 订阅 RSS�
 - **番剧目录匹配**：繁简转换、别名表、相似度匹配（阈值可调），对不上时自动建新目录；两个候选无法区分时宁可不下并弹通知
 - **四重去重**：本地状态文件、infohash、RSS GUID、番剧目录内同集文件，绝不重复下载
 - **下载状态跟踪**：任务创建后服务会持续盯梢，下载完成后约 15~30 秒内自动把记录写进桌面文档；超大文件超出等待上限（`record_wait_seconds`，默认 15 分钟）时由下一轮巡检兜底，记录不丢。失败自动重试（默认 3 次）并弹 macOS 通知
+- **本地网页面板**：`http://127.0.0.1:8787`（仅本机可访问）——状态总览、更新记录展示、一键手动刷新 RSS；季度初订阅新番后无需等待后台巡检
 - **双保险**：记录文档在服务目录有一份实时备份，桌面文件出意外可自动重建
 
 ## 环境要求
@@ -33,8 +34,10 @@ python3 mikan_gopeed.py --once --dry-run --verbose
 # 3. 手动跑一轮（真的下载）
 python3 mikan_gopeed.py --once --verbose
 
-# 4. 没问题后安装 launchd 定时服务（每 10 分钟一轮，登录自启）
+# 4. 没问题后安装 launchd 服务（下载巡检每 10 分钟一轮 + 本地网页面板，登录自启）
 ./setup_launchd.sh
+
+# 5. 打开面板：浏览器访问 http://127.0.0.1:8787（可在面板里一键手动刷新）
 ```
 
 启动 Gopeed 不是必须的：服务发现 Gopeed 没在运行时会自动 `open -a Gopeed` 拉起它。
@@ -66,6 +69,8 @@ python3 mikan_gopeed.py --once --verbose
 | `pending_path` | 下载中任务的跟踪文件 |
 | `max_task_attempts` | 单集下载失败的最大尝试次数 |
 | `record_wait_seconds` | 任务创建后盯梢下载完成的最长等待时间（默认 900 秒） |
+| `webui_port` | 本地网页面板端口（默认 8787，仅监听 127.0.0.1） |
+| `webui_icon` | 面板图标源图（默认 `icon.png`，放在服务目录；重启面板后生效） |
 | `poll_interval_seconds` | 常驻模式的轮询间隔（launchd 模式下不生效，间隔由 plist 定） |
 | `match_threshold` / `match_margin` | 标题匹配的相似度阈值 / 决胜差距 |
 | `gopeed_api.unix_socket` | Gopeed 桌面版本地 socket 路径 |
@@ -90,12 +95,14 @@ RSS 链接等同于 Mikan 账号凭证。若需要更换：在 Mikan「我的 Ba
 
 ```bash
 launchctl bootout gui/$(id -u)/com.mikan-gopeed
-rm ~/Library/LaunchAgents/com.mikan-gopeed.plist
+launchctl bootout gui/$(id -u)/com.mikan-gopeed-webui
+rm ~/Library/LaunchAgents/com.mikan-gopeed.plist ~/Library/LaunchAgents/com.mikan-gopeed-webui.plist
 ```
 
 ## 版本历史
 
-- **v1.1.0**（当前）：任务创建后服务持续盯梢，下载完成约 15~30 秒内即写入记录（原先依赖 10 分钟巡检，平均延迟 5 分钟）；修复失败重试机制——失败任务现在会自动从 Gopeed 清理后重新创建，最多尝试 `max_task_attempts` 次；仓库直接附带可编辑的 `config.json` 占位模板；新增 `record_wait_seconds` 配置键
+- **v1.2.0**（当前）：新增**本地网页面板**（`http://127.0.0.1:8787`，仅本机可访问）——状态总览、更新记录展示、一键手动刷新 RSS；支持自定义面板图标（把图片命名为 `icon.png` 放到服务目录）；安全上默认仅监听本机回环 + Host 校验 + 刷新令牌，杜绝 DNS rebinding 与跨站伪造
+- **v1.1.0**：任务创建后服务持续盯梢，下载完成约 15~30 秒内即写入记录（原先依赖 10 分钟巡检，平均延迟 5 分钟）；修复失败重试机制——失败任务现在会自动从 Gopeed 清理后重新创建，最多尝试 `max_task_attempts` 次；新增 `record_wait_seconds` 配置键
 - **v1.0.0**：首个公开发布版本
 
 ## 实现里踩过的坑（对后来者有用）
