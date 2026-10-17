@@ -21,7 +21,7 @@ from typing import Any, Iterable
 
 
 VIDEO_EXTENSIONS = {".mp4", ".mkv", ".avi", ".mov", ".ts", ".m2ts", ".webm"}
-__version__ = "1.2.1"
+__version__ = "1.2.2"
 USER_AGENT = f"mikan-gopeed/{__version__}"
 
 TRADITIONAL_MAP = str.maketrans(
@@ -231,7 +231,7 @@ def magnet_from_torrent(raw: bytes) -> tuple[str, str]:
 
 def extract_episode(title: str) -> int | None:
     patterns = [
-        r"\s[-–—]\s*(\d{1,4})(?:v\d+)?\s*\[",
+        r"\s[-–—]\s*(\d{1,4})(?:v\d+)?\s*[\[\(]",
         r"\s[-–—]\s*(\d{1,4})(?:v\d+)?\s*$",
         r"第\s*(\d{1,4})\s*(?:话|話|集)",
         r"(?i)\bep?\s*(\d{1,3})(?:v\d+)?\b",
@@ -1005,6 +1005,7 @@ def run_once(config: dict[str, Any], *, dry_run: bool, verbose: bool) -> int:
             target.mkdir(parents=True, exist_ok=True)
             mark_seen(state, item, "created")
             state.setdefault("series_folders", {})[normalize_text(series_title(title))] = target_name
+            save_state(state_path, state)  # 立即落盘，防止并发周期重复创建同一集
             pending = load_pending(pending_path)
             pending[str(task_id)] = make_pending_entry(item, target, episode, files)
             save_pending(pending_path, pending)

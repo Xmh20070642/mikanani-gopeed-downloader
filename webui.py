@@ -277,6 +277,8 @@ def start_refresh():
                 running=True, started_at=time.time(), finished_at=None,
                 ok=None, summary=None, error=None, output="",
             )
+            import importlib
+            importlib.reload(service)  # 热加载：代码更新后刷新即用最新版
             config = load_config()
             buffer = io.StringIO()
             with contextlib.redirect_stdout(buffer), contextlib.redirect_stderr(buffer):

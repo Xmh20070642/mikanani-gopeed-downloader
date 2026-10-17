@@ -18,6 +18,13 @@ class MikanGopeedTests(unittest.TestCase):
         self.assertEqual(service.extract_episode("[SubGroup] 某某番剧 EP09 [720P]"), 9)
         self.assertEqual(service.extract_episode("[SubGroup] 某某番剧 [07][1080P]"), 7)
         self.assertIsNone(service.extract_episode("[SubGroup] 某某番剧 [1080P][MP4]"))
+        # 集数后跟半角括号（如 "- 51 (NetFlix ...)"）的标题——曾是解析盲区
+        self.assertEqual(
+            service.extract_episode(
+                "[天月搬运组] 药师少女的独语 (药屋少女的呢喃) / Kusuriya no Hitorigoto - 51 (NetFlix 1920x1080 AVC AAC MKV)"
+            ),
+            51,
+        )
 
     def test_classify_match_ambiguous(self):
         folders = ["魔法星空物语", "魔法星空物语2"]
