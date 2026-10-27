@@ -325,6 +325,14 @@ PAGE = """<!doctype html>
   --accent:#0071e3; --ok:#34c759; --bad:#ff3b30; --warn:#ff9f0a;
   --radius:18px; --shadow:0 2px 12px rgba(0,0,0,.06);
 }
+@media (prefers-color-scheme: dark){
+  :root{
+    --bg:#1d1d1f; --card:#2c2c2e; --text:#f5f5f7; --muted:#98989d;
+    --accent:#0a84ff; --ok:#30d158; --bad:#ff453a; --warn:#ffd60a;
+    --shadow:0 2px 12px rgba(0,0,0,.5);
+  }
+  .logbox{background:#111113;border:1px solid rgba(255,255,255,.08)}
+}
 *{box-sizing:border-box;margin:0;padding:0}
 body{background:var(--bg);color:var(--text);
   font-family:-apple-system,BlinkMacSystemFont,"SF Pro Text","PingFang SC","Helvetica Neue",sans-serif;
@@ -360,6 +368,13 @@ h2{font-size:22px;font-weight:700;margin-bottom:14px;letter-spacing:-.3px}
 .record .sub{color:var(--muted);font-size:12px;margin-top:6px;
   word-break:break-all;line-height:1.6}
 .mono{font-family:ui-monospace,"SF Mono",Menlo,monospace;font-size:11px}
+.listcard{background:var(--card);border-radius:var(--radius);box-shadow:var(--shadow);overflow:hidden}
+.row{display:flex;align-items:center;gap:12px;padding:11px 16px;border-top:1px solid rgba(128,128,128,.18)}
+.row:first-child{border-top:none}
+.rowmain{flex:1;min-width:0}
+.rowtitle{font-size:13px;font-weight:600;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.rowstatus{font-size:11px;color:var(--muted);font-weight:400}
+.button.sm{padding:5px 14px;font-size:12px;flex:none}
 .logbox{background:#1d1d1f;color:#f5f5f7;border-radius:var(--radius);
   padding:16px 18px;font-family:ui-monospace,"SF Mono",Menlo,monospace;
   font-size:11px;line-height:1.7;white-space:pre-wrap;word-break:break-all;
@@ -394,12 +409,10 @@ footer{max-width:980px;margin:48px auto 0;padding:0 22px 32px;
     <div class="card stat"><div class="v" id="stPending">—</div><div class="l">下载中任务</div></div>
   </div>
   <section>
-    <h2>巡检明细</h2>
-    <div id="scanBox" class="empty">点「立即刷新 RSS」获取与本地内容的对比结果</div>
-  </section>
-  <section>
     <h2>更新记录</h2>
     <div id="records"></div>
+    <div class="sub" style="margin:18px 0 10px;font-size:13px">RSS 条目状态（未下载的点右侧按钮）</div>
+    <div id="scanBox"></div>
   </section>
   <section>
     <h2>手动刷新</h2>
@@ -503,27 +516,31 @@ async function loadRecords() {
 }
 
 const STATUS_TEXT = {
-  downloading: ["⬇️ 下载中", "ok"], downloaded: ["✅ 已下载", "ok"],
-  pending: ["⏳ 待下载", "warn"], seen: ["⏭ 已见过", "warn"],
-  ambiguous: ["⛔ 匹配歧义", "bad"], guard: ["⛔ 目录守卫", "bad"],
-  failed: ["❌ 失败", "bad"],
+  downloading: "下载中", downloaded: "已下载", pending: "待下载",
+  seen: "已见过", ambiguous: "匹配歧义", guard: "目录守卫", failed: "失败",
 };
 
 async function loadScan() {
   try {
     const d = await api("/api/scan");
     const items = d.items || [];
-    if (!items.length) { $("scanBox").innerHTML = '<div class="empty">本轮还没有扫描结果</div>'; return; }
-    const rows = items.map((it, idx) => {
-      const [txt, cls] = STATUS_TEXT[it.status] || [it.status, "warn"];
+    if (!items.length) { $("scanBox").innerHTML = ""; return; }
+    const order = { failed: 0, guard: 1, ambiguous: 2, seen: 3, pending: 4, downloading: 5, downloaded: 6 };
+    const rows = items.map((it, idx) => ({ it, idx }))
+      .sort((a, b) => (order[a.it.status] ?? 9) - (order[b.it.status] ?? 9));
+    const html = rows.map(({ it, idx }) => {
+      const label = STATUS_TEXT[it.status] || it.status;
       const downloadable = !["downloaded", "downloading"].includes(it.status);
-      return '<div class="record"><div class="time">' + esc(txt) + '</div>' +
-        '<div class="t">' + esc(it.title) + '</div>' +
-        (it.detail ? '<div class="sub">' + esc(it.detail) + '</div>' : '') +
-        (downloadable ? '<button class="button" style="margin-top:8px" onclick="downloadItem(' + idx + ')">立即下载</button>' : '') +
+      const name = (it.episode != null ? it.series + " 第 " + it.episode + " 集" : it.series) || it.title;
+      return '<div class="row" title="' + esc(it.title) + '">' +
+        '<div class="rowmain"><div class="rowtitle">' + esc(name) +
+        ' <span class="rowstatus">· ' + esc(label) + (it.detail ? '（' + esc(it.detail) + '）' : '') + '</span></div></div>' +
+        (downloadable
+          ? '<button class="button sm" onclick="downloadItem(' + idx + ')">下载</button>'
+          : (it.status === "downloading" ? '<span class="rowstatus">进行中…</span>' : '')) +
         '</div>';
     }).join("");
-    $("scanBox").innerHTML = rows;
+    $("scanBox").innerHTML = '<div class="listcard">' + html + '</div>';
   } catch (e) {
     $("scanBox").innerHTML = '<div class="empty">读取扫描结果失败：' + esc(e.message) + '</div>';
   }

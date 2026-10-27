@@ -21,7 +21,7 @@ from typing import Any, Iterable
 
 
 VIDEO_EXTENSIONS = {".mp4", ".mkv", ".avi", ".mov", ".ts", ".m2ts", ".webm"}
-__version__ = "1.3.0"
+__version__ = "1.3.1"
 USER_AGENT = f"mikan-gopeed/{__version__}"
 
 TRADITIONAL_MAP = str.maketrans(
