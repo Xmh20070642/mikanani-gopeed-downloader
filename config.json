@@ -24,5 +24,9 @@
   },
   "record_wait_seconds": 900,
   "webui_port": 8787,
-  "webui_icon": "icon.png"
+  "webui_icon": "icon.png",
+  "push": {
+    "enabled": true,
+    "imessage_target": "<你的 Apple ID 邮箱或手机号>"
+  }
 }

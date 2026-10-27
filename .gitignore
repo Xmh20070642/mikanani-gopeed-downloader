@@ -14,7 +14,6 @@ __pycache__/
 *.log
 *.tmp
 state.lock
-rss-url-backup.txt
 
 # 面板图标（用户自备，不入库）
 icon.png

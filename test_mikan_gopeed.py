@@ -80,6 +80,18 @@ class MikanGopeedTests(unittest.TestCase):
             "碧蓝之海 第三季",
         )
 
+    def test_episode_file_extension_trap(self):
+        # 回归：.mp4 扩展名里的 "4" 曾让任何"第 4 集"被误判已存在
+        with tempfile.TemporaryDirectory() as directory:
+            folder = Path(directory)
+            (folder / "[Tsukigakirei] Ao no Hako - 27 [WebRip 1080P AVC-8bit AAC][CHT&JPN].mp4").write_bytes(b"x")
+            self.assertIsNone(service.episode_file(folder, 4))
+            self.assertIsNone(service.episode_file(folder, 3))   # S03/AAC 里的数字不算
+            self.assertIsNotNone(service.episode_file(folder, 27))
+            (folder / "[Group] Show S02E04 [1080p].mkv").write_bytes(b"x")
+            self.assertIsNotNone(service.episode_file(folder, 4))  # E04 式命名算第 4 集
+            self.assertIsNone(service.episode_file(folder, 2))     # S02 不是第 2 集
+
     def test_episode_file(self):
         with tempfile.TemporaryDirectory() as directory:
             folder = Path(directory)

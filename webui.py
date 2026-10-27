@@ -58,6 +58,7 @@ def service_paths(config):
         "pending": Path(_p("pending_path", "record-pending.json")),
         "state": Path(_p("state_path", "state.json")),
         "icon_source": Path(_p("webui_icon", "icon.png")),
+        "scan": Path(_p("scan_path", "last_scan.json")),
     }
 
 
@@ -259,6 +260,7 @@ def collect_status(config):
             ("running", "started_at", "finished_at", "ok", "summary", "error")
         },
         "auto_interval": int(config.get("poll_interval_seconds", 600)),
+        "push_configured": bool(((config.get("push") or {}).get("imessage_target") or "").strip()),
     }
 
 
@@ -383,7 +385,7 @@ footer{max-width:980px;margin:48px auto 0;padding:0 22px 32px;
 <div class="wrap">
   <div class="hero">
     <h1>番剧更新</h1>
-    <p>mikan-gopeed v@@VERSION@@ · 自动下载 · 每一集都有记录</p>
+    <p>mikan-gopeed v@@VERSION@@ · 自动下载 · 每一集都有记录 · <span id="pushState">推送：—</span></p>
   </div>
   <div class="grid">
     <div class="card stat"><div class="v" id="stGopeed">—</div><div class="l">Gopeed 下载器</div></div>
@@ -391,6 +393,10 @@ footer{max-width:980px;margin:48px auto 0;padding:0 22px 32px;
     <div class="card stat"><div class="v" id="stSeen">—</div><div class="l">去重记录</div></div>
     <div class="card stat"><div class="v" id="stPending">—</div><div class="l">下载中任务</div></div>
   </div>
+  <section>
+    <h2>巡检明细</h2>
+    <div id="scanBox" class="empty">点「立即刷新 RSS」获取与本地内容的对比结果</div>
+  </section>
   <section>
     <h2>更新记录</h2>
     <div id="records"></div>
@@ -433,6 +439,7 @@ function renderStatus(s) {
   $("stSeen").textContent = s.seen + " 条";
   $("stPending").textContent = s.pending + " 个";
   $("footVer").textContent = "mikan-gopeed v" + s.version + " · 面板仅本机可访问";
+  $("pushState").textContent = "推送：" + (s.push_configured ? "已配置" : "未配置");
 
   const c = s.last_cycle || {};
   const sum = c.summary;
@@ -495,6 +502,47 @@ async function loadRecords() {
   }
 }
 
+const STATUS_TEXT = {
+  downloading: ["⬇️ 下载中", "ok"], downloaded: ["✅ 已下载", "ok"],
+  pending: ["⏳ 待下载", "warn"], seen: ["⏭ 已见过", "warn"],
+  ambiguous: ["⛔ 匹配歧义", "bad"], guard: ["⛔ 目录守卫", "bad"],
+  failed: ["❌ 失败", "bad"],
+};
+
+async function loadScan() {
+  try {
+    const d = await api("/api/scan");
+    const items = d.items || [];
+    if (!items.length) { $("scanBox").innerHTML = '<div class="empty">本轮还没有扫描结果</div>'; return; }
+    const rows = items.map((it, idx) => {
+      const [txt, cls] = STATUS_TEXT[it.status] || [it.status, "warn"];
+      const downloadable = !["downloaded", "downloading"].includes(it.status);
+      return '<div class="record"><div class="time">' + esc(txt) + '</div>' +
+        '<div class="t">' + esc(it.title) + '</div>' +
+        (it.detail ? '<div class="sub">' + esc(it.detail) + '</div>' : '') +
+        (downloadable ? '<button class="button" style="margin-top:8px" onclick="downloadItem(' + idx + ')">立即下载</button>' : '') +
+        '</div>';
+    }).join("");
+    $("scanBox").innerHTML = rows;
+  } catch (e) {
+    $("scanBox").innerHTML = '<div class="empty">读取扫描结果失败：' + esc(e.message) + '</div>';
+  }
+}
+
+async function downloadItem(idx) {
+  try {
+    const r = await api("/api/download", {
+      method: "POST",
+      headers: {"X-Panel-Token": TOKEN, "Content-Type": "application/json"},
+      body: JSON.stringify({index: idx}),
+    });
+    $("scanBox").innerHTML = '<div class="empty">' + esc(r.message || "已请求下载") + '</div>';
+    setTimeout(async () => { await loadScan(); await loadStatus(); await loadRecords(); }, 2500);
+  } catch (e) {
+    alert("下载失败：" + e.message);
+  }
+}
+
 let refreshing = false;
 async function doRefresh() {
   if (refreshing) return;
@@ -508,6 +556,7 @@ async function doRefresh() {
       clearInterval(timer);
       refreshing = false;
       await loadRecords();
+      await loadScan();
       await loadStatus();
     }
   }, 2000);
@@ -517,6 +566,7 @@ async function doRefresh() {
 setInterval(loadStatus, 5000);
 loadStatus();
 loadRecords();
+loadScan();
 </script>
 </body>
 </html>
@@ -572,6 +622,13 @@ class PanelHandler(BaseHTTPRequestHandler):
         elif path == "/api/log":
             lines, _ = tail_log_lines()
             self._json({"lines": lines[-60:]})
+        elif path == "/api/scan":
+            paths = service_paths(config)
+            try:
+                data = json.loads(paths["scan"].read_text(encoding="utf-8")) if paths["scan"].exists() else {"time": 0, "items": []}
+                self._json(data)
+            except Exception as exc:
+                self._json({"error": str(exc)}, 500)
         elif path == "/apple-touch-icon.png":
             self._send(200, icon_bytes("apple-touch-icon.png"), "image/png")
         elif path == "/favicon.png":
@@ -584,17 +641,39 @@ class PanelHandler(BaseHTTPRequestHandler):
             self._send(403, b'{"error":"forbidden host"}')
             return
         length = int(self.headers.get("Content-Length", 0) or 0)
-        if length:
-            self.rfile.read(min(length, 65536))
+        body = self.rfile.read(min(length, 65536)) if length else b""
         path = self.path.split("?")[0]
-        if path != "/api/refresh":
+        if path not in ("/api/refresh", "/api/download"):
             self._json({"error": "not found"}, 404)
             return
         if self.headers.get("X-Panel-Token", "") != TOKEN:
             self._send(403, b'{"error":"invalid token"}')
             return
-        ok, message = start_refresh()
-        self._json({"ok": ok, "message": message})
+        if path == "/api/refresh":
+            ok, message = start_refresh()
+            self._json({"ok": ok, "message": message})
+            return
+        # /api/download：入参是扫描结果的条目索引，不是 URL
+        try:
+            payload = json.loads(body.decode("utf-8") or "{}")
+            idx = int(payload.get("index", -1))
+        except Exception:
+            self._json({"ok": False, "message": "无效请求"}, 400)
+            return
+        paths = service_paths(load_config())
+        try:
+            scan = json.loads(paths["scan"].read_text(encoding="utf-8")) if paths["scan"].exists() else {"items": []}
+        except Exception:
+            scan = {"items": []}
+        items = scan.get("items") or []
+        if not (0 <= idx < len(items)):
+            self._json({"ok": False, "message": "条目不存在（请先刷新 RSS）"}, 400)
+            return
+        entry = items[idx]
+        result = service.force_download_item(
+            {"title": entry.get("title", ""), "guid": entry.get("guid", "")}, load_config()
+        )
+        self._json(result)
 
     def log_message(self, *args):
         pass  # 关闭默认访问日志

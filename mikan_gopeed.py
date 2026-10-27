@@ -21,7 +21,7 @@ from typing import Any, Iterable
 
 
 VIDEO_EXTENSIONS = {".mp4", ".mkv", ".avi", ".mov", ".ts", ".m2ts", ".webm"}
-__version__ = "1.2.2"
+__version__ = "1.3.0"
 USER_AGENT = f"mikan-gopeed/{__version__}"
 
 TRADITIONAL_MAP = str.maketrans(
@@ -359,9 +359,14 @@ def new_folder_name(title: str) -> str:
 def episode_file(folder: Path, episode: int | None) -> Path | None:
     if episode is None:
         return None
-    pattern = re.compile(rf"(?<!\d)0*{episode}(?!\d)")
+    # 只在去扩展名的文件名主体里匹配，且集数不能紧贴字母数字（S03 里的 03 不是第 3 集）；
+    # 例外：E01 / E4 这类命名中的集数紧贴 E 仍算命中
+    pattern = re.compile(rf"(?:(?<![0-9A-Za-z])|(?<=[Ee]))0*{episode}(?!\d)")
     for path in folder.rglob("*"):
-        if path.is_file() and path.suffix.lower() in VIDEO_EXTENSIONS and pattern.search(path.name):
+        if not path.is_file() or path.suffix.lower() not in VIDEO_EXTENSIONS:
+            continue
+        stem = path.name[: -len(path.suffix)] if path.suffix else path.name
+        if pattern.search(stem):
             return path
     return None
 
@@ -544,6 +549,9 @@ def check_pending_downloads(
                 continue
             del pending[task_id]
             log(f"RECORDED download of {entry['title']!r} into {record_path.name}", verbose=verbose)
+            ep = entry.get("episode")
+            label = f"{entry['series']} 第 {ep} 集" if ep is not None else entry["series"]
+            push_imessage(f"✅ {label} 下载完成")
         elif status == "error":
             # 失败任务必须从 Gopeed 删除，否则它的 btih 会一直占据哈希去重名单，
             # 下一轮的重新创建会被挡住，"重试"永远不会真正发生
@@ -559,6 +567,7 @@ def check_pending_downloads(
                     state["seen"][key] = "failed"
                 attempts.pop(series_key, None)
                 notify(f"番剧多次下载失败，已放弃本轮更新：{entry['title']}")
+                push_imessage(f"❌ {entry['title']} 多次下载失败（已试 {n} 次），请手动处理")
             else:
                 attempts[series_key] = n
                 for key in filter(None, entry.get("keys", [])):
@@ -730,6 +739,42 @@ def flush_notifications() -> None:
     )
 
 
+_push_enabled = False
+_push_target = ""
+
+
+def configure_push(config: dict[str, Any]) -> None:
+    """读取 push 配置：imessage_target 为空则不推送。"""
+    global _push_enabled, _push_target
+    push_cfg = config.get("push") or {}
+    _push_enabled = bool(push_cfg.get("enabled", True))
+    _push_target = str(push_cfg.get("imessage_target", "") or "").strip()
+
+
+def push_imessage(message: str) -> bool:
+    """通过 macOS Messages 给自己发 iMessage（iPhone 弹系统通知）。
+    走 osascript 调本地 Messages.app，服务端不发起任何 URL 请求。"""
+    if not _push_enabled or not _push_target:
+        return False
+    esc = lambda s: str(s).replace("\\", "\\\\").replace('"', '\\"')
+    script = (
+        'tell application "Messages" to send "'
+        + esc(message)
+        + '" to buddy "'
+        + esc(_push_target)
+        + '"'
+    )
+    try:
+        subprocess.run(
+            ["osascript", "-e", script],
+            check=False, timeout=30,
+            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+        )
+        return True
+    except Exception:
+        return False
+
+
 def gopeed_ready(client: GopeedClient, *, allow_launch: bool, verbose: bool) -> bool:
     try:
         client.info()
@@ -842,10 +887,80 @@ def wait_for_records(
         time.sleep(poll_interval)
 
 
+def create_task_for(
+    item: dict[str, str],
+    target: Path,
+    episode: int | None,
+    client: "GopeedClient",
+    state: dict[str, Any],
+    state_path: Path,
+    pending_path: Path,
+    *,
+    source: str | None = None,
+) -> str:
+    """解析资源并在 Gopeed 创建任务，登记去重状态与下载跟踪。返回 task_id。"""
+    if source is None:
+        source, _, _ = resolve_item_source(item)
+    resolved = client.resolve(source, target)
+    files = find_resource_files(resolved)
+    if not files:
+        raise RuntimeError("resource contains no downloadable files")
+    selected = video_indexes(files)
+    if not selected:
+        selected = list(range(len(files)))
+    rid = resolved.get("id", "") if isinstance(resolved, dict) else ""
+    task_id = client.create(source, target, rid, selected)
+    target.mkdir(parents=True, exist_ok=True)
+    mark_seen(state, item, "created")
+    state.setdefault("series_folders", {})[normalize_text(series_title(item["title"]))] = target.name
+    save_state(state_path, state)  # 立即落盘，防止并发周期重复创建同一集
+    pending = load_pending(pending_path)
+    pending[str(task_id)] = make_pending_entry(item, target, episode, files)
+    save_pending(pending_path, pending)
+    return str(task_id)
+
+
+def force_download_item(item: dict[str, str], config: dict[str, Any]) -> dict[str, Any]:
+    """面板『立即下载』：清除该条目已见标记并强制创建任务。"""
+    def _p(key: str, default: str) -> Path:
+        value = os.path.expanduser(str(config.get(key, default)))
+        return Path(value) if os.path.isabs(value) else Path(__file__).with_name(value)
+
+    state_path = _p("state_path", "state.json")
+    pending_path = _p("pending_path", "record-pending.json")
+    root = Path(os.path.expanduser(config.get("anime_root", ".")))
+    state = load_state(state_path)
+    keys = [k for k in item_keys(item) if k]
+    for key in keys:
+        state["seen"].pop(key, None)
+    state.get("download_attempts", {}).pop(keys[-1] if keys else "", None)
+    save_state(state_path, state)
+
+    episode = extract_episode(item["title"])
+    folders = [q.name for q in root.iterdir() if q.is_dir() and q.name != config.get("completed_dir_name", "已完結")] if root.exists() else []
+    status, matched_name, _ = classify_match(item["title"], folders, config.get("aliases") or {})
+    target_name = matched_name if status == "matched" else new_folder_name(item["title"])
+    target = root / target_name
+
+    api_cfg = config.get("gopeed_api", {})
+    client = GopeedClient(
+        api_cfg.get("base_url", "http://127.0.0.1:9999"),
+        api_cfg.get("token", ""),
+        api_cfg.get("unix_socket", ""),
+        start_app=False,
+    )
+    try:
+        task_id = create_task_for(item, target, episode, client, state, state_path, pending_path)
+        return {"ok": True, "task_id": task_id, "message": f"已创建下载：{item['title'][:40]}"}
+    except Exception as exc:
+        return {"ok": False, "message": f"创建失败：{exc}"}
+
+
 def run_once(config: dict[str, Any], *, dry_run: bool, verbose: bool) -> int:
     rss_url = config["rss_url"]
     root = Path(os.path.expanduser(config["anime_root"]))
     aliases = {str(key): list(value) for key, value in config.get("aliases", {}).items()}
+    configure_push(config)
     state_path = Path(os.path.expanduser(
         config.get("state_path", Path(__file__).with_name("state.json"))))
     if not acquire_run_lock(state_path):
@@ -905,9 +1020,23 @@ def run_once(config: dict[str, Any], *, dry_run: bool, verbose: bool) -> int:
     }
     log(f"RSS items: {len(items)}", verbose=verbose)
 
+    outcomes: list[dict[str, Any]] = []
+
+    def note(item: dict[str, str], status: str, detail: str = "", target: Path | None = None) -> None:
+        outcomes.append({
+            "title": item.get("title", ""),
+            "guid": item.get("guid", ""),
+            "series": series_title(item.get("title", "")),
+            "episode": extract_episode(item.get("title", "")),
+            "status": status,
+            "detail": detail,
+            "target": str(target) if target else "",
+        })
+
     for item in items:
         if root_missing:
             summary["skipped"] += 1
+            note(item, "failed", "番剧根目录不存在")
             continue
         title = item["title"]
         episode = extract_episode(title)
@@ -927,6 +1056,7 @@ def run_once(config: dict[str, Any], *, dry_run: bool, verbose: bool) -> int:
             )
             if not dry_run:
                 notify(f"番剧目录匹配歧义，未下载：{title}")
+            note(item, "ambiguous", f"候选目录接近：{matched_name}")
             continue
         if status == "new":
             known = state.get("series_folders", {}).get(normalize_text(series_title(title)))
@@ -940,6 +1070,7 @@ def run_once(config: dict[str, Any], *, dry_run: bool, verbose: bool) -> int:
                     verbose=True,
                 )
                 notify(f"番剧目录可能被改名或移动（原：{known}），本轮未下载：{series_title(title)}")
+                note(item, "guard", f"原目录：{known}")
                 continue
             target_name, score = new_folder_name(title), 0.0
         else:
@@ -950,6 +1081,7 @@ def run_once(config: dict[str, Any], *, dry_run: bool, verbose: bool) -> int:
         if existing:
             summary["skipped"] += 1
             log(f"SKIP existing file: {title!r} -> {existing}", verbose=verbose)
+            note(item, "downloaded", str(existing))
             if not dry_run:
                 mark_seen(state, item, "existing-file")
                 state.setdefault("series_folders", {})[normalize_text(series_title(title))] = target_name
@@ -958,6 +1090,7 @@ def run_once(config: dict[str, Any], *, dry_run: bool, verbose: bool) -> int:
         if is_seen(state, item):
             summary["skipped"] += 1
             log(f"SKIP local state: {title!r} -> {target_name!r}", verbose=verbose)
+            note(item, "seen", "已标记处理过（若实际未下载请点立即下载）")
             continue
 
         try:
@@ -966,6 +1099,7 @@ def run_once(config: dict[str, Any], *, dry_run: bool, verbose: bool) -> int:
             summary["errors"] += 1
             log(f"ERROR {title}: {exc}", verbose=True)
             notify(f"番剧源解析失败：{title}")
+            note(item, "failed", f"源解析失败：{exc}")
             continue
 
         log(
@@ -977,6 +1111,7 @@ def run_once(config: dict[str, Any], *, dry_run: bool, verbose: bool) -> int:
         if infohash and infohash in gopeed_hashes:
             summary["skipped"] += 1
             log("SKIP Gopeed task hash", verbose=verbose)
+            note(item, "seen", "Gopeed 已有同哈希任务")
             if not dry_run:
                 mark_seen(state, item, "gopeed-task")
             continue
@@ -984,37 +1119,35 @@ def run_once(config: dict[str, Any], *, dry_run: bool, verbose: bool) -> int:
         if dry_run:
             summary["would_create"] += 1
             log(f"DRY-RUN would create task in {target}", verbose=True)
+            note(item, "pending", "dry-run 不创建任务", target)
             continue
 
         if not api_available:
             summary["errors"] += 1
             log(f"ERROR cannot create task; Gopeed API is unavailable: {title}", verbose=True)
             notify(f"Gopeed API 不可用，未下载：{title}")
+            note(item, "failed", "Gopeed API 不可用", target)
             continue
 
         try:
-            resolved = client.resolve(source, target)
-            files = find_resource_files(resolved)
-            if not files:
-                raise RuntimeError("resource contains no downloadable files")
-            selected = video_indexes(files)
-            if not selected:
-                selected = list(range(len(files)))
-            rid = resolved.get("id", "") if isinstance(resolved, dict) else ""
-            task_id = client.create(source, target, rid, selected)
-            target.mkdir(parents=True, exist_ok=True)
-            mark_seen(state, item, "created")
-            state.setdefault("series_folders", {})[normalize_text(series_title(title))] = target_name
-            save_state(state_path, state)  # 立即落盘，防止并发周期重复创建同一集
-            pending = load_pending(pending_path)
-            pending[str(task_id)] = make_pending_entry(item, target, episode, files)
-            save_pending(pending_path, pending)
+            create_task_for(item, target, episode, client, state, state_path, pending_path, source=source)
             summary["created"] += 1
             log(f"CREATED Gopeed task for {title!r} -> {target}", verbose=True)
+            note(item, "downloading", "", target)
         except Exception as exc:
             summary["errors"] += 1
             log(f"ERROR Gopeed task creation failed for {title!r}: {exc}", verbose=True)
             notify(f"Gopeed 任务创建失败：{title}")
+            note(item, "failed", f"创建失败：{exc}", target)
+
+    # 记录本轮每条条目的去向，供面板展示（固定路径，无请求可控输入）
+    try:
+        scan_file = Path(os.path.expanduser(
+            config.get("scan_path", str(Path(__file__).with_name("last_scan.json")))))
+        atomic_write_text(scan_file, json.dumps(
+            {"time": time.time(), "items": outcomes}, ensure_ascii=False, indent=2))
+    except Exception as exc:
+        log(f"ERROR writing scan results: {exc}", verbose=True)
 
     if not dry_run:
         if api_available:
