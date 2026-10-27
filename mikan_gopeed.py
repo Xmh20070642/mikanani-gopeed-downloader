@@ -21,7 +21,7 @@ from typing import Any, Iterable
 
 
 VIDEO_EXTENSIONS = {".mp4", ".mkv", ".avi", ".mov", ".ts", ".m2ts", ".webm"}
-__version__ = "1.3.1"
+__version__ = "1.3.2"
 USER_AGENT = f"mikan-gopeed/{__version__}"
 
 TRADITIONAL_MAP = str.maketrans(
@@ -862,9 +862,12 @@ def wait_for_records(
     poll_interval: int = 15,
     max_attempts: int = 3,
     verbose: bool = False,
+    state_path: Path | None = None,
 ) -> bool:
     """任务创建后在同一进程内盯梢：每 poll_interval 秒检查一次，
-    全部下载完成并写入记录后返回 True；超时交给下一轮巡检兜底。"""
+    全部下载完成并写入记录后返回 True；超时交给下一轮巡检兜底。
+    传入 state_path 时睡眠期间释放运行锁并落盘 state、醒后重读，
+    这样手动刷新和定时巡检不必等盯梢结束；返回时仍持有锁。"""
     deadline = time.time() + max(max_wait, 0)
     while True:
         try:
@@ -884,7 +887,18 @@ def wait_for_records(
         if time.time() >= deadline:
             log(f"record wait timeout after {max_wait}s; falling back to next cycle", verbose=verbose)
             return False
+        if state_path is None:
+            time.sleep(poll_interval)
+            continue
+        # 先落盘再放锁小睡；拿回锁后重读，避免用旧快照覆盖别的轮次写入的去重状态
+        save_state(state_path, state)
+        release_run_lock()
         time.sleep(poll_interval)
+        while not acquire_run_lock(state_path):
+            time.sleep(1)
+        fresh = load_state(state_path)
+        state.clear()
+        state.update(fresh)
 
 
 def create_task_for(
@@ -956,7 +970,13 @@ def force_download_item(item: dict[str, str], config: dict[str, Any]) -> dict[st
         return {"ok": False, "message": f"创建失败：{exc}"}
 
 
-def run_once(config: dict[str, Any], *, dry_run: bool, verbose: bool) -> int:
+def run_once(
+    config: dict[str, Any],
+    *,
+    dry_run: bool,
+    verbose: bool,
+    on_scanned: Any = None,
+) -> int:
     rss_url = config["rss_url"]
     root = Path(os.path.expanduser(config["anime_root"]))
     aliases = {str(key): list(value) for key, value in config.get("aliases", {}).items()}
@@ -1149,6 +1169,12 @@ def run_once(config: dict[str, Any], *, dry_run: bool, verbose: bool) -> int:
     except Exception as exc:
         log(f"ERROR writing scan results: {exc}", verbose=True)
 
+    if on_scanned is not None:
+        try:
+            on_scanned(summary)
+        except Exception:
+            pass
+
     if not dry_run:
         if api_available:
             try:
@@ -1171,6 +1197,7 @@ def run_once(config: dict[str, Any], *, dry_run: bool, verbose: bool) -> int:
                     max_wait=max(0, int(config.get("record_wait_seconds", 900))),
                     max_attempts=max(1, int(config.get("max_task_attempts", 3))),
                     verbose=verbose,
+                    state_path=state_path,
                 )
             except Exception as exc:
                 log(f"ERROR pending check failed (will retry next cycle): {exc}", verbose=True)

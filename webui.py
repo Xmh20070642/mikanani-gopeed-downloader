@@ -269,9 +269,9 @@ def collect_status(config):
 
 def start_refresh():
     if refresh_state["running"]:
-        return False, "已有刷新在运行中，请稍候"
+        return False, "扫描进行中，请稍候"
     if not _refresh_mutex.acquire(blocking=False):
-        return False, "已有刷新在运行中，请稍候"
+        return False, "正在盯下载进度（完成后自动记录），本轮结束后可再刷新"
 
     def worker():
         try:
@@ -283,8 +283,26 @@ def start_refresh():
             importlib.reload(service)  # 热加载：代码更新后刷新即用最新版
             config = load_config()
             buffer = io.StringIO()
-            with contextlib.redirect_stdout(buffer), contextlib.redirect_stderr(buffer):
-                rc = service.run_once(config, dry_run=False, verbose=True)
+
+            def on_scanned(summary):
+                # 扫描完成即恢复按钮；下载盯梢在后台继续，完成后自动写记录
+                refresh_state.update(
+                    running=False, finished_at=time.time(),
+                    ok=True, summary=summary, error=None,
+                )
+
+            rc = 0
+            last_skipped = False
+            for attempt in range(5):
+                mark = buffer.tell()
+                with contextlib.redirect_stdout(buffer), contextlib.redirect_stderr(buffer):
+                    rc = service.run_once(config, dry_run=False, verbose=True, on_scanned=on_scanned)
+                attempt_out = buffer.getvalue()[mark:]
+                last_skipped = "another mikan-gopeed instance" in attempt_out
+                if not last_skipped:
+                    break
+                # 别的轮次正在扫描或盯梢：稍候插队，而不是空手返回
+                time.sleep(6)
             output = buffer.getvalue()
             summary = None
             for line in output.splitlines():
@@ -293,6 +311,14 @@ def start_refresh():
                         summary = json.loads(line[len("SUMMARY "):])
                     except Exception:
                         pass
+            if summary is None:
+                summary = refresh_state.get("summary")  # on_scanned 已交付的结果不清空
+            if summary is None and last_skipped:
+                summary = {
+                    "items": 0, "skipped": 0, "created": 0,
+                    "would_create": 0, "errors": 0,
+                    "note": "另一个巡检正在运行，本次刷新被跳过，可稍后再试",
+                }
             refresh_state.update(
                 running=False, finished_at=time.time(), ok=(rc == 0),
                 summary=summary, error=None, output=output[-4000:],
@@ -324,12 +350,14 @@ PAGE = """<!doctype html>
   --bg:#f5f5f7; --card:#ffffff; --text:#1d1d1f; --muted:#86868b;
   --accent:#0071e3; --ok:#34c759; --bad:#ff3b30; --warn:#ff9f0a;
   --radius:18px; --shadow:0 2px 12px rgba(0,0,0,.06);
+  --nav:rgba(245,245,247,.8); --nav-border:rgba(0,0,0,.06);
 }
 @media (prefers-color-scheme: dark){
   :root{
     --bg:#1d1d1f; --card:#2c2c2e; --text:#f5f5f7; --muted:#98989d;
     --accent:#0a84ff; --ok:#30d158; --bad:#ff453a; --warn:#ffd60a;
     --shadow:0 2px 12px rgba(0,0,0,.5);
+    --nav:rgba(29,29,31,.82); --nav-border:rgba(255,255,255,.08);
   }
   .logbox{background:#111113;border:1px solid rgba(255,255,255,.08)}
 }
@@ -337,9 +365,9 @@ PAGE = """<!doctype html>
 body{background:var(--bg);color:var(--text);
   font-family:-apple-system,BlinkMacSystemFont,"SF Pro Text","PingFang SC","Helvetica Neue",sans-serif;
   -webkit-font-smoothing:antialiased;min-height:100vh}
-.nav{position:sticky;top:0;z-index:10;background:rgba(245,245,247,.8);
+.nav{position:sticky;top:0;z-index:10;background:var(--nav);
   backdrop-filter:saturate(180%) blur(20px);-webkit-backdrop-filter:saturate(180%) blur(20px);
-  border-bottom:1px solid rgba(0,0,0,.06)}
+  border-bottom:1px solid var(--nav-border)}
 .nav-inner{max-width:980px;margin:0 auto;display:flex;align-items:center;
   justify-content:space-between;padding:14px 22px}
 .nav-title{font-size:17px;font-weight:600}
@@ -484,7 +512,8 @@ function renderStatus(s) {
       const t = new Date(rf.finished_at * 1000).toLocaleString("zh-CN", {hour12: false});
       const sm = rf.summary;
       txt = "上次手动刷新：" + t + (rf.ok ? " ✓" : " ✗") +
-            (sm ? "（新条目 " + sm.items + " · 下载 " + sm.created + " · 跳过 " + sm.skipped + " · 失败 " + sm.errors + "）" : "") +
+            (sm ? "（新条目 " + sm.items + " · 下载 " + sm.created + " · 跳过 " + sm.skipped + " · 失败 " + sm.errors + "）" +
+                 (sm.note ? " " + esc(sm.note) : "") : "") +
             (rf.error ? " 错误：" + rf.error : "");
     }
     $("refreshBox").innerHTML = esc(txt);
@@ -581,6 +610,7 @@ async function doRefresh() {
 }
 
 setInterval(loadStatus, 5000);
+setInterval(async () => { await loadRecords(); await loadScan(); }, 30000);
 loadStatus();
 loadRecords();
 loadScan();

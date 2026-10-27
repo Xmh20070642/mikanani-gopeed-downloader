@@ -1,5 +1,7 @@
 import hashlib
 import tempfile
+import threading
+import time
 import unittest
 from pathlib import Path
 
@@ -252,6 +254,49 @@ class WaitRecordsTests(unittest.TestCase):
             )
             self.assertFalse(ok)
             self.assertIn("t2", service.load_pending(pending))
+
+    def test_wait_releases_lock_while_sleeping_and_reloads_state(self):
+        # 盯梢小睡期间必须放掉运行锁（手动刷新/定时巡检才插得进来），
+        # 醒后必须重读 state（否则旧快照会覆盖别的轮次的写入）
+        with tempfile.TemporaryDirectory() as d:
+            root = Path(d)
+            pending, record, backup = root / "p.json", root / "r.md", root / "b.md"
+            state_path = root / "state.json"
+            target = root / "目标番剧"
+            target.mkdir()
+            entry = service.make_pending_entry(
+                {"title": "[ANi] X - 03", "guid": "g3"}, target, 3, []
+            )
+            service.save_pending(pending, {"t3": entry})
+            service.save_state(state_path, {"seen": {}})
+            state = service.load_state(state_path)
+            grabbed = threading.Event()
+            result = {}
+
+            def watch():
+                result["ok"] = service.wait_for_records(
+                    _FakeClient([{"id": "t3", "status": "running"}]),
+                    pending, record, state, backup,
+                    max_wait=6, poll_interval=1, verbose=False,
+                    state_path=state_path,
+                )
+
+            self.assertTrue(service.acquire_run_lock(state_path))
+            th = threading.Thread(target=watch, daemon=True)
+            th.start()
+            deadline = time.time() + 7
+            while time.time() < deadline and not grabbed.is_set():
+                if service.acquire_run_lock(state_path):
+                    service.save_state(state_path, {"seen": {"外人写入": "1"}})
+                    service.release_run_lock()
+                    grabbed.set()
+                    break
+                time.sleep(0.05)
+            th.join(timeout=20)
+            self.assertTrue(grabbed.is_set(), "盯梢睡眠期间未释放运行锁")
+            self.assertIn("外人写入", state["seen"])  # 醒后重读，未用旧快照覆盖
+            self.assertFalse(result["ok"])
+            service.release_run_lock()
 
 
 class PanelTests(unittest.TestCase):
